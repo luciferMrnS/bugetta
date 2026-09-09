@@ -44,6 +44,7 @@ export function MobileMenu({
       links.push({ href: "/admin/suppliers", label: "Supplier reviews" });
       links.push({ href: "/admin/trust", label: "Trust center" });
       links.push({ href: "/admin/analytics", label: "Analytics" });
+      links.push({ href: "/admin/users", label: "Users" });
     }
     if (sessionRole === ROLES.SUPPLIER) {
       links.push({ href: "/suppliers", label: "Supplier home" });

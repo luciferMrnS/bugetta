@@ -58,6 +58,14 @@ export async function Header() {
               Analytics
             </Link>
           )}
+          {session !== null && session.user.role === ROLES.ADMIN && (
+            <Link
+              href="/admin/users"
+              className="hidden text-zinc-500 sm:inline"
+            >
+              Users
+            </Link>
+          )}
           {isSupplier && (
             <Link
               href="/suppliers"
