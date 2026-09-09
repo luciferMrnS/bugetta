@@ -9,6 +9,8 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    // Falls back to the local SQLite dev database so `prisma generate` works
+    // in build environments (e.g. Render) that have no DATABASE_URL set yet.
+    url: process.env["DATABASE_URL"] ?? "file:./prisma/dev.db",
   },
 });
