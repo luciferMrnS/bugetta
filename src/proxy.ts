@@ -21,14 +21,9 @@ export function proxy(request: NextRequest) {
     }
   }
 
-  // Sign-in pages are irrelevant once a session exists.
-  if (
-    hasSessionCookie &&
-    (request.nextUrl.pathname === "/login" ||
-      request.nextUrl.pathname === "/register")
-  ) {
-    return NextResponse.redirect(new URL("/account", request.url));
-  }
+  // Sign-in pages are public — no redirect even if a cookie exists.
+  // This prevents an infinite redirect loop when the session cookie is
+  // stale (cookie present but the DB row is gone after a deploy/expire).
 
   return NextResponse.next();
 }
