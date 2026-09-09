@@ -61,7 +61,7 @@ describe("automation lifecycle hooks", () => {
     const customer = await prisma.user.findFirst({ where: { role: ROLES.CUSTOMER } });
     const run = await waitForRun("REQUEST_CREATED");
     expect(run.status).toBe("COMPLETED");
-    expect(run.summary).toContain("Discovered");
+    expect(run.summary).toContain("Request acknowledged");
 
     const notice = await prisma.notification.findFirst({
       where: { userId: customer?.id, kind: "REQUEST_CREATED" },
@@ -202,7 +202,8 @@ describe("automation lifecycle hooks", () => {
       where: { trigger: "REQUEST_CREATED", requestId },
     });
     expect(run?.status).toBe("COMPLETED");
-    expect(run?.summary).toContain("Discovered 0 suppliers");
-    expect(run?.results).toContain("match");
+    expect(run?.summary).toContain("Request acknowledged");
+    expect(run?.results).not.toContain("match");
+    expect(run?.results).not.toContain("auto_quote");
   });
 });

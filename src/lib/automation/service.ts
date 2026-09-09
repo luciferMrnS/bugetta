@@ -1,9 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { matchSuppliersToRequest } from "@/lib/suppliers/matching";
-import { createRequestOption, createRequestQuote } from "@/lib/operations/service";
 import { sendNotification } from "@/lib/notify/service";
-import { getDeliveryProvider } from "@/lib/delivery/providers/registry";
-import { minorUnitsFromMajor, majorUnitsFromMinor } from "@/lib/money";
 
 export const AUTOMATION_TRIGGERS = [
   "REQUEST_CREATED",
@@ -20,8 +16,6 @@ export const AUTOMATION_RUN_STATUS = {
   FAILED: "FAILED",
 } as const;
 
-export const MAX_AUTO_QUOTES = 3;
-export const AUTO_QUOTE_SERVICE_FEE_NAIRA = 1500;
 export const LOW_STOCK_THRESHOLD = 5;
 
 const REFERENCE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -215,10 +209,10 @@ export async function runAutomation(
 async function handleRequestCreated(requestId: string, runRef: string, now: Date) {
   const results: AutomationAction[] = [];
 
-  // 1) Customer ack
+  // Customer ack
   const request = await prisma.request.findUnique({
     where: { id: requestId },
-    select: { id: true, reference: true, summary: true, category: true, location: true, customerId: true, budgetKobo: true, deliveryDeadline: true },
+    select: { id: true, reference: true, summary: true, customerId: true },
   });
   if (!request) throw new AutomationError("NOT_FOUND", "Request not found");
 
@@ -231,102 +225,13 @@ async function handleRequestCreated(requestId: string, runRef: string, now: Date
   });
   results.push({ action: "notify.customer", detail: `REQUEST_CREATED sent for ${request.reference}` });
 
-  // 2) Supplier discovery via matching engine
-  const match = await matchSuppliersToRequest(requestId);
-  if (match.matches.length === 0) {
-    results.push({ action: "match", detail: "No supplier matches found" });
-  } else {
-    // Resolve userIds for matched suppliers
-    const supplierIds = match.matches.slice(0, 5).map((m) => m.supplierId);
-    const supplierUsers = await prisma.supplier.findMany({
-      where: { id: { in: supplierIds } },
-      select: { id: true, userId: true },
-    });
-    const supplierIdToUserId = new Map(supplierUsers.map((s) => [s.id, s.userId]));
-
-    const topMatches = match.matches.slice(0, 5);
-    for (const supplier of topMatches) {
-      const userId = supplierIdToUserId.get(supplier.supplierId);
-      if (!userId) continue;
-      await sendNotification({
-        userId,
-        kind: "SUPPLIER_LEAD",
-        reference: request.reference,
-        vars: {
-          ref: request.reference,
-          summary: request.summary,
-          categoryLabel: match.request.categoryLabel,
-        },
-        now,
-      });
-      results.push({ action: "notify.supplier", detail: `SUPPLIER_LEAD sent to ${supplier.businessName}`, reference: supplier.supplierId });
-    }
-  }
-
-  // 3) Auto-quote generation for up to MAX_AUTO_QUOTES priced offerings
-  const pricedMatches = match.matches.filter((m) =>
-    m.offeringMatches.some((o) => o.priceNaira !== null),
-  );
-  for (const supplier of pricedMatches.slice(0, MAX_AUTO_QUOTES)) {
-    const cheapestOffering = supplier.offeringMatches
-      .filter((o) => o.priceNaira !== null)
-      .sort((a, b) => (a.priceNaira ?? 0) - (b.priceNaira ?? 0))[0];
-    if (!cheapestOffering) continue;
-
-    const priceKobo = minorUnitsFromMajor(cheapestOffering.priceNaira ?? 0);
-    const deliveryKobo = await estimateDeliveryFee(request.location ?? null);
-    const estimatedDelivery = await estimateDeliveryWindow(request.location ?? null, now);
-
-    // Create RequestOption (internal research line, mirrors ops flow)
-    const option = await createRequestOption(requestId, {
-      supplier: supplier.businessName,
-      productName: cheapestOffering.title,
-      priceNaira: majorUnitsFromMinor(priceKobo),
-      availability: "Auto-sourced from catalogue",
-      estimatedDelivery,
-      notes: "Auto-generated from matched supplier catalogue",
-      images: [],
-    });
-
-    // Create the customer-facing PENDING quote, marked AUTO so ops can tell
-    // machine-made offers from hand-crafted ones at a glance.
-    const validUntil = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    await createRequestQuote(requestId, {
-      optionId: option.id,
-      productName: cheapestOffering.title,
-      priceNaira: majorUnitsFromMinor(priceKobo),
-      serviceFeeNaira: AUTO_QUOTE_SERVICE_FEE_NAIRA,
-      deliveryFeeNaira: majorUnitsFromMinor(deliveryKobo),
-      information: "Auto-generated from matched supplier catalogue",
-      images: [],
-      estimatedDelivery,
-      validUntil: validUntil.toISOString().slice(0, 10),
-      source: "AUTO",
-    });
-
-    results.push({ action: "auto_quote", detail: `Auto-quote created for ${supplier.businessName}: ${cheapestOffering.title}`, reference: option.id });
-  }
-
-  // 4) Notify customer that auto-quotes are ready (if any)
-  if (results.some((r) => r.action === "auto_quote")) {
-    await sendNotification({
-      userId: request.customerId,
-      kind: "QUOTE_READY",
-      reference: request.reference,
-      vars: { ref: request.reference, productName: "New options", priceLabel: "from your matched suppliers" },
-      now,
-    });
-    results.push({ action: "notify.customer", detail: "QUOTE_READY sent for auto-quotes" });
-  }
-
-  const summary = `Discovered ${match.matches.length} suppliers, created ${results.filter(r=>r.action==="auto_quote").length} auto-quotes`;
   const completed = await prisma.automationRun.create({
     data: {
       reference: runRef,
       trigger: "REQUEST_CREATED",
       requestId,
       status: "COMPLETED",
-      summary,
+      summary: "Request acknowledged. Options are sourced and typed by the team.",
       results: JSON.stringify(results),
       createdAt: now,
     },
@@ -465,30 +370,3 @@ async function handleLowStock(supplierId: string, offeringId: string, runRef: st
   return serializeAutomationRun(completed);
 }
 
-// Fee + ETA from the sandbox logistics provider. Delivery is quoted against
-// the requested drop-off location because pickup is decided later in fulfilment.
-async function estimateDeliveryFee(dropLocation: string | null): Promise<number> {
-  const provider = getDeliveryProvider("sandbox");
-  const quote = provider.quote({
-    dropLocation,
-    priority: "STANDARD",
-    now: new Date(),
-  });
-  return quote.feeKobo;
-}
-
-async function estimateDeliveryWindow(
-  dropLocation: string | null,
-  now: Date,
-): Promise<string> {
-  const provider = getDeliveryProvider("sandbox");
-  const quote = provider.quote({ dropLocation, priority: "STANDARD", now });
-  if (!quote.eta) {
-    return "3–5 business days";
-  }
-  const days = Math.max(
-    1,
-    Math.round((quote.eta.getTime() - now.getTime()) / 86_400_000),
-  );
-  return `${days} business day${days === 1 ? "" : "s"}`;
-}

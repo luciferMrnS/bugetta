@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { ROLES } from "@/lib/auth/roles";
 import { hashPassword } from "@/lib/auth/password";
 import { resetDatabase, PASSWORD } from "@/lib/test/http";
-import { runAutomation, MAX_AUTO_QUOTES } from "@/lib/automation/service";
+import { runAutomation } from "@/lib/automation/service";
 
 async function makeUser(role: string, email: string): Promise<string> {
   const passwordHash = await hashPassword(PASSWORD);
@@ -80,12 +80,10 @@ beforeEach(async () => {
 });
 
 describe("runAutomation — REQUEST_CREATED", () => {
-  it("acknowledges the customer, alerts matched suppliers and auto-quotes", async () => {
+  it("acknowledges the customer but does not auto-generate options (manual ops only)", async () => {
     const customerId = await makeUser(ROLES.CUSTOMER, "customer@example.com");
     const supplierA = await makeApprovedSupplier(["FOOD"]);
     await makeOffering(supplierA.supplierId, "Party catering pack", "FOOD");
-    const supplierB = await makeApprovedSupplier(["FOOD"]);
-    await makeOffering(supplierB.supplierId, "Office catering", "FOOD");
     const requestId = await makeRequest(customerId, "FOOD");
 
     const run = await runAutomation({ trigger: "REQUEST_CREATED", requestId });
@@ -94,33 +92,27 @@ describe("runAutomation — REQUEST_CREATED", () => {
     expect(run.trigger).toBe("REQUEST_CREATED");
     expect(run.reference).toMatch(/^AUTO-/);
 
+    // The customer is acknowledged...
     const actions = run.results.map((r) => r.action);
-    expect(actions).toContain("notify.customer");
-    expect(actions.filter((a) => a === "notify.supplier").length).toBeGreaterThanOrEqual(1);
-
-    // Customer acknowledgment was delivered.
+    expect(actions).toEqual(["notify.customer"]);
     const customerNotifications = await prisma.notification.count({
       where: { userId: customerId, kind: "REQUEST_CREATED" },
     });
     expect(customerNotifications).toBeGreaterThanOrEqual(1);
 
-    // Auto-quotes were created from catalogue prices and tagged AUTO.
-    const autoQuotes = await prisma.quote.findMany({
-      where: { requestId, source: "AUTO" },
+    // ...but no supplier leads, assignments, or auto-quotes are produced.
+    const supplierNotifications = await prisma.notification.count({
+      where: { kind: "SUPPLIER_LEAD" },
     });
-    expect(autoQuotes.length).toBeGreaterThan(0);
-    expect(autoQuotes.length).toBeLessThanOrEqual(MAX_AUTO_QUOTES);
-    for (const quote of autoQuotes) {
-      expect(quote.serviceFeeKobo).toBeGreaterThan(0);
-      expect(quote.deliveryFeeKobo).toBeGreaterThan(0);
-      expect(quote.status).toBe("PENDING");
-    }
+    expect(supplierNotifications).toBe(0);
+    expect(await prisma.quote.count({ where: { requestId, source: "AUTO" } })).toBe(0);
+    expect(
+      await prisma.supplierRequest.count({ where: { requestId } }),
+    ).toBe(0);
   });
 
   it("is idempotent per request — a second run is SKIPPED", async () => {
     const customerId = await makeUser(ROLES.CUSTOMER, "customer2@example.com");
-    const supplier = await makeApprovedSupplier(["FOOD"]);
-    await makeOffering(supplier.supplierId, "Catering pack", "FOOD");
     const requestId = await makeRequest(customerId, "FOOD");
 
     await runAutomation({ trigger: "REQUEST_CREATED", requestId });

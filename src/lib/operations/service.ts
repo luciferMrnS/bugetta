@@ -218,8 +218,8 @@ export async function createRequestQuote(
     },
   });
 
-  // Notify customer that a new quote is ready (manual quotes; auto-quotes
-  // fire their own notification via automation).
+  // Notify customer that a new quote is ready (quotes are created by the
+  // team manually — automation no longer auto-quotes).
   if (quote.source === "MANUAL") {
     const request = await prisma.request.findUnique({
       where: { id: requestId },
