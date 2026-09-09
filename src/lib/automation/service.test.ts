@@ -82,6 +82,8 @@ beforeEach(async () => {
 describe("runAutomation — REQUEST_CREATED", () => {
   it("acknowledges the customer but does not auto-generate options (manual ops only)", async () => {
     const customerId = await makeUser(ROLES.CUSTOMER, "customer@example.com");
+    const operatorId = await makeUser(ROLES.OPERATIONS, "ops@example.com");
+    const adminId = await makeUser(ROLES.ADMIN, "admin@example.com");
     const supplierA = await makeApprovedSupplier(["FOOD"]);
     await makeOffering(supplierA.supplierId, "Party catering pack", "FOOD");
     const requestId = await makeRequest(customerId, "FOOD");
@@ -94,11 +96,27 @@ describe("runAutomation — REQUEST_CREATED", () => {
 
     // The customer is acknowledged...
     const actions = run.results.map((r) => r.action);
-    expect(actions).toEqual(["notify.customer"]);
+    expect(actions).toEqual(["notify.customer", "notify.ops"]);
     const customerNotifications = await prisma.notification.count({
       where: { userId: customerId, kind: "REQUEST_CREATED" },
     });
     expect(customerNotifications).toBeGreaterThanOrEqual(1);
+
+    // ...and the team is alerted so a new request is picked up asap.
+    const requestReference = (
+      await prisma.request.findUniqueOrThrow({
+        where: { id: requestId },
+        select: { reference: true },
+      })
+    ).reference;
+    const opsNotice = await prisma.notification.findFirst({
+      where: { userId: operatorId, kind: "NEW_REQUEST" },
+    });
+    const adminNotice = await prisma.notification.findFirst({
+      where: { userId: adminId, kind: "NEW_REQUEST" },
+    });
+    expect(opsNotice?.reference).toBe(requestReference);
+    expect(adminNotice?.reference).toBe(requestReference);
 
     // ...but no supplier leads, assignments, or auto-quotes are produced.
     const supplierNotifications = await prisma.notification.count({

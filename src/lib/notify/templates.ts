@@ -4,6 +4,7 @@
 
 export const NOTIFICATION_KINDS = [
   "REQUEST_CREATED",
+  "NEW_REQUEST",
   "SUPPLIER_LEAD",
   "SUPPLIER_APPLICATION",
   "QUOTE_READY",
@@ -24,6 +25,10 @@ export const NOTIFICATION_TEMPLATES: Record<NotificationKind, Template> = {
   REQUEST_CREATED: {
     title: "We received your request {ref}",
     body: "Our team is researching {summary} and will share options with you shortly.",
+  },
+  NEW_REQUEST: {
+    title: "New request: {ref}",
+    body: "{summary} from {customerName}. Open it in Operations to get started.",
   },
   SUPPLIER_LEAD: {
     title: "New request matches your catalogue: {ref}",

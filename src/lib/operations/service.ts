@@ -39,8 +39,11 @@ const OPERATIONS_INCLUDE = {
   },
 };
 
-export async function listRequestsForOperations(): Promise<OperationRequestCard[]> {
+export async function listRequestsForOperations(
+  since?: Date,
+): Promise<OperationRequestCard[]> {
   const rows = await prisma.request.findMany({
+    where: since ? { createdAt: { gt: since } } : undefined,
     orderBy: { createdAt: "desc" },
     include: {
       customer: { select: { name: true } },

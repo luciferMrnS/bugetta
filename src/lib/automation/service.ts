@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { ROLES } from "@/lib/auth/roles";
 import { sendNotification } from "@/lib/notify/service";
 
 export const AUTOMATION_TRIGGERS = [
@@ -212,7 +213,13 @@ async function handleRequestCreated(requestId: string, runRef: string, now: Date
   // Customer ack
   const request = await prisma.request.findUnique({
     where: { id: requestId },
-    select: { id: true, reference: true, summary: true, customerId: true },
+    select: {
+      id: true,
+      reference: true,
+      summary: true,
+      customerId: true,
+      customer: { select: { name: true } },
+    },
   });
   if (!request) throw new AutomationError("NOT_FOUND", "Request not found");
 
@@ -224,6 +231,31 @@ async function handleRequestCreated(requestId: string, runRef: string, now: Date
     now,
   });
   results.push({ action: "notify.customer", detail: `REQUEST_CREATED sent for ${request.reference}` });
+
+  // Alert the team so a new request is picked up asap.
+  const operators = await prisma.user.findMany({
+    where: { role: { in: [ROLES.OPERATIONS, ROLES.ADMIN] } },
+    select: { id: true },
+  });
+  for (const operator of operators) {
+    await sendNotification({
+      userId: operator.id,
+      kind: "NEW_REQUEST",
+      reference: request.reference,
+      vars: {
+        ref: request.reference,
+        summary: request.summary,
+        customerName: request.customer?.name ?? "a customer",
+      },
+      now,
+    });
+  }
+  if (operators.length > 0) {
+    results.push({
+      action: "notify.ops",
+      detail: `NEW_REQUEST sent to ${operators.length} staff member(s)`,
+    });
+  }
 
   const completed = await prisma.automationRun.create({
     data: {

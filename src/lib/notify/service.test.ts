@@ -50,7 +50,7 @@ describe("notification service", () => {
   });
 
   it("supports all kinds the automation layer can dispatch", () => {
-    for (const kind of ["REQUEST_CREATED", "SUPPLIER_LEAD", "QUOTE_READY", "PAYMENT_PAID", "ORDER_PROCESSING", "DELIVERED", "LOW_STOCK"]) {
+    for (const kind of ["REQUEST_CREATED", "NEW_REQUEST", "SUPPLIER_LEAD", "QUOTE_READY", "PAYMENT_PAID", "ORDER_PROCESSING", "DELIVERED", "LOW_STOCK"]) {
       expect(isNotificationKind(kind)).toBe(true);
     }
     expect(isNotificationKind("NOT_A_KIND")).toBe(false);

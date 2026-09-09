@@ -3,6 +3,7 @@ import { getCurrentSession } from "@/lib/auth/session.cookies";
 import { ROLES } from "@/lib/auth/roles";
 import { NotificationBell } from "@/components/NotificationBell";
 import { MobileMenu } from "@/components/MobileMenu";
+import { NewRequestsToast } from "@/components/operations/NewRequestsToast";
 
 export async function Header() {
   const session = await getCurrentSession();
@@ -75,6 +76,7 @@ export async function Header() {
             </Link>
           )}
           {session && <NotificationBell />}
+          {isOperator && <NewRequestsToast />}
           {session ? (
             <>
               <Link

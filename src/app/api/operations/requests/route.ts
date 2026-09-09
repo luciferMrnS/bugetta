@@ -11,6 +11,10 @@ export async function GET(request: NextRequest) {
     return guard.response;
   }
 
-  const requests = await listRequestsForOperations();
+  const sinceRaw = request.nextUrl.searchParams.get("since");
+  const since = sinceRaw ? new Date(sinceRaw) : undefined;
+  const requests = await listRequestsForOperations(
+    since && !Number.isNaN(since.getTime()) ? since : undefined,
+  );
   return ok({ requests });
 }

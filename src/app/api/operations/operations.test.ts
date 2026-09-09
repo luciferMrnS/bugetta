@@ -174,6 +174,46 @@ describe("api /api/operations/requests in isolated DB", () => {
     expect(adminList.status).toBe(200);
   });
 
+  it("filters the list with since= to only newer requests", async () => {
+    const first = await createCustomerRequest(
+      "I need a standing fan, 3 speed",
+    );
+    const ops = await createOperatorAndCollectCookies();
+
+    // Before a timestamp that predates the request, it appears.
+    const past = "2020-01-01T00:00:00.000Z";
+    const pastList = await opsListRoute(
+      makeApiGet(ops.req, `/api/operations/requests?since=${past}`),
+    );
+    const pastJson = (await pastList.json()) as {
+      data?: { requests: OperationRequestOutput[] };
+    };
+    expect(pastJson.data?.requests.some((r) => r.id === first.request.id)).toBe(
+      true,
+    );
+
+    // After a timestamp in the future, nothing new shows up.
+    const future = "2999-01-01T00:00:00.000Z";
+    const futureList = await opsListRoute(
+      makeApiGet(ops.req, `/api/operations/requests?since=${future}`),
+    );
+    const futureJson = (await futureList.json()) as {
+      data?: { requests: OperationRequestOutput[] };
+    };
+    expect(futureJson.data?.requests).toEqual([]);
+
+    // A malformed timestamp is ignored and returns everything.
+    const malformed = await opsListRoute(
+      makeApiGet(ops.req, "/api/operations/requests?since=not-a-date"),
+    );
+    const malformedJson = (await malformed.json()) as {
+      data?: { requests: OperationRequestOutput[] };
+    };
+    expect(
+      malformedJson.data?.requests.some((r) => r.id === first.request.id),
+    ).toBe(true);
+  });
+
   it("transitions status step by step and rejects illegal moves", async () => {
     const { request } = await createCustomerRequest(
       "I need bespoke suits, wedding party of 6 groomsmen",
