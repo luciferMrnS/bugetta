@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light dark;
+
+  /* Warm palette: soft paper instead of pure white, espresso instead of
+     near-black so surfaces feel composed rather than stark. */
+  --background: #faf6f0;
+  --foreground: #2b2118;
+  --surface: #fffdf8; /* elevated panels (dropdowns, sheets) */
+  --accent: #d97706; /* warm amber — used for the most important CTAs */
+  --accent-foreground: #ffffff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #171310;
+    --foreground: #f2ebe1;
+    --surface: #201a15;
+    --accent: #f59e0b;
+    --accent-foreground: #1c1712;
+  }
+}
+
+body {
+  background-color: var(--background);
+  /* A faint warm glow at the top makes the page feel soft and inviting
+     without adding visual noise. */
+  background-image: radial-gradient(
+    1000px 480px at 50% -8%,
+    color-mix(in srgb, var(--accent) 9%, transparent),
+    transparent
+  );
+  background-repeat: no-repeat;
+  color: var(--foreground);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+}

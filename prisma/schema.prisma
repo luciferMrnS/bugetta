@@ -1,0 +1,603 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Roles and statuses are stored as String constants (NOT native enums)
+// so the schema stays portable across SQLite (dev) and PostgreSQL (prod).
+
+// Reference catalogue of category keys (mirrors lib/requests/categories.ts).
+// Seeds at migration time; Request, Offering and Supplier all reference it so
+// referential integrity is enforced at the database, not just in app code.
+model Category {
+  key       String             @id // constant key, e.g. "FOOD"
+  label     String
+  sortOrder Int                @default(0)
+  requests  Request[]
+  offerings Offering[]
+  suppliers SupplierCategory[]
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  phone        String?
+  role         String    @default("CUSTOMER") // CUSTOMER | OPERATIONS | ADMIN | SUPPLIER
+  status       String    @default("ACTIVE") // ACTIVE | SUSPENDED
+  emailVerifiedAt DateTime? // set when the email address is verified
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  sessions     Session[]
+  verificationTokens EmailVerificationToken[]
+  requests     Request[]
+  payments     Payment[]
+  supplier     Supplier?
+  ratingsGiven Rating[] @relation("CustomerRatings") // customer ratings of suppliers, keyed to the request
+  notifications Notification[]
+  notificationPreferences NotificationPreference[]
+}
+
+model Session {
+  id           String    @id @default(cuid())
+  tokenHash    String    @unique
+  csrfHash     String
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt    DateTime
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime  @updatedAt
+  ipAddress    String?
+  userAgent    String?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// One active email-verification token per unverified user. Tokens are stored
+// hashed (SHA-256) so a leaked table never exposes live verification links.
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+// A customer's unstructured need, converted into structured data by the
+// deterministic parser. Statuses are String constants (see lib/requests/status.ts).
+// Phase 6 introduces the full order lifecycle (REQUESTED … COMPLETED plus the
+// terminal CANCELLED / REFUNDED / DISPUTED) and an immutable status audit trail.
+model Request {
+  id               String          @id @default(cuid())
+  reference        String          @unique // human-friendly, e.g. REQ-8F3K2Q
+  customerId       String
+  customer         User            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  category         String          // constant key from lib/requests/categories.ts
+  summary          String          // short title derived from the description
+  description      String          // the customer's original text
+  budgetKobo       Int?            // monetary values in minor units (kobo), never floats
+  quantity         String?
+  location         String?
+  deliveryDeadline DateTime?
+  instructions     String?
+  images           String          @default("[]") // JSON array of reference image URLs
+  status           String          @default("REQUESTED") // lib/requests/status.ts
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  items            RequestItem[]
+  options          RequestOption[]
+  quotes           Quote[]
+  payments         Payment[]
+  events           RequestEvent[]
+  supplierAssignments SupplierRequest[]
+  earnings         SupplierEarning[]
+  delivery         Delivery?
+  ratings          Rating[]
+  disputes         Dispute[]
+  complaints       Complaint[]
+  fraudFlags       FraudFlag[]
+  automationRuns   AutomationRun[]
+  categoryRef      Category     @relation(fields: [category], references: [key], onDelete: Restrict)
+
+  @@index([customerId, createdAt(sort: Desc)])
+  @@index([status])
+  @@index([category])
+}
+
+// Immutable audit trail of every status transition a request takes. Whenever
+// the request status changes — by the customer, an operator, or the payment
+// system — a row is written so the order timeline/history is always preserved.
+model RequestEvent {
+  id         String    @id @default(cuid())
+  requestId  String
+  request    Request   @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  fromStatus String? // null for the initial "created" event
+  toStatus   String
+  cause      String // created | customer | operator | payment | refund
+  actorId    String? // User.id of the actor, when a user performed the change
+  actorRole  String? // CUSTOMER | OPERATIONS | ADMIN | SUPPLIER, when a user performed the change
+  createdAt  DateTime  @default(now())
+
+  @@index([requestId, createdAt])
+}
+
+// A has-one business profile attached to a SUPPLIER user. Recorded once during
+// onboarding; the supplier then edits it and manages offerings. Approval
+// governs whether the supplier may operate and receive requests.
+model Supplier {
+  id             String            @id @default(cuid())
+  userId         String            @unique
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessName   String
+  description    String?
+  contactName    String            @default("")
+  phone          String?
+  whatsapp       String? // informal suppliers operate over WhatsApp where appropriate
+  email          String? // contact address, may differ from the account email
+  serviceArea    String? // where the supplier operates
+  operatingHours String? // free-text, e.g. "Mon–Sat 9am–6pm"
+  paymentDetails String? // settlement / payment information
+  logoUrl        String?
+  status         String            @default("PENDING") // SUPPLIER: PENDING | APPROVED | SUSPENDED | REJECTED
+  approvedAt     DateTime?
+  rejectedAt     DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  offerings      Offering[]
+  supplierRequests SupplierRequest[]
+  earnings       SupplierEarning[]
+  ratings        Rating[]
+  catalogSyncs   CatalogSync[]
+  supplierCategories SupplierCategory[]
+
+  @@index([status])
+  @@index([businessName])
+}
+
+// Many-to-many link between a supplier and the categories they cover. The
+// JSON categories column was normalized into this join table so every stored
+// category key is enforced by a foreign key to Category.key.
+model SupplierCategory {
+  supplierId  String
+  supplier    Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  categoryKey String
+  category    Category @relation(fields: [categoryKey], references: [key], onDelete: Cascade)
+
+  @@id([supplierId, categoryKey])
+  @@index([categoryKey])
+}
+
+// A supplier's catalogue entry: what they can provide, at what price, whether
+// available, where offered and how it is delivered. Suppliers are NOT forced to
+// have a complete catalogue — offerings are optional and each stands alone.
+model Offering {
+  id                String          @id @default(cuid())
+  supplierId        String
+  supplier          Supplier        @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  category          String // category key from lib/requests/categories.ts
+  categoryRef       Category        @relation(fields: [category], references: [key], onDelete: Restrict)
+  title             String // the product/service name
+  description       String?
+  priceKobo         Int? // minor units (kobo); null = priced on request / negotiable
+  currency          String          @default("NGN")
+  availability      String? // e.g. "in stock", "made to order", "on request"
+  location          String? // where the offering is delivered/served
+  deliveryDetail    String? // e.g. "produce and deliver", "pickup in Lekki"
+  images            String          @default("[]") // JSON array of reference URLs
+  isActive          Boolean         @default(true)
+  quantityAvailable Int? // live stock count mirrored by inventory sync; null = not tracked
+  lastSyncedAt      DateTime? // when the catalogue last inventory-synced this entry
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([supplierId])
+  @@index([category])
+  @@index([isActive])
+  @@index([quantityAvailable])
+}
+
+// The link between an approved supplier and the requests they may act on.
+// After a meeting-solution/quote, an operations/admin agent assigns the request
+// to a supplier, or a supplier accepts a request from their visible pool. The
+// supplier sees only their own assignments (private data isolation).
+model SupplierRequest {
+  id         String    @id @default(cuid())
+  supplierId String
+  supplier   Supplier  @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  requestId  String
+  request    Request   @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  status     String    @default("ASSIGNED") // REQUEST: ASSIGNED | ACCEPTED | DECLINED
+  earnedKobo Int? // revenue attributable to this supplier for the order, in kobo
+  fulfilledAt DateTime? // when the supplier fulfilled the order
+  notes      String?
+  overrideNote String? // operator note when they overrode the automated supplier recommendation
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([supplierId, requestId])
+  @@index([supplierId, status])
+  @@index([requestId])
+}
+
+// Immutable ledger row tracking what is owed/paid to a supplier. Earnings are
+// server-derived from fulfilled supplier-request assignments (money in kobo).
+model SupplierEarning {
+  id            String   @id @default(cuid())
+  supplierId    String
+  supplier      Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  requestId     String
+  request       Request  @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  amountKobo    Int
+  reason        String   @default("FULFILLMENT")
+  status        String   @default("EARNED") // EARNED | PAID
+  paidAt        DateTime?
+  createdAt     DateTime @default(now())
+
+  @@unique([supplierId, requestId])
+  @@index([supplierId])
+}
+// Immutable audit trail of every status transition a request takes. Whenever
+
+model RequestItem {
+  id        String   @id @default(cuid())
+  requestId String
+  request   Request  @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  name      String
+  quantity  String?
+  note      String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([requestId])
+}
+
+// Internal working offers the operations team assembles while researching a
+// request. NEVER exposed to the customer — only their crafted quotes are.
+model RequestOption {
+  id                String       @id @default(cuid())
+  requestId         String
+  request           Request      @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  supplier          String       // who/what can fulfil this
+  productName       String       // the specific product or service offered
+  priceKobo         Int?         // minor units (kobo), null until priced
+  availability      String?      // e.g. "in stock", "7–10 days to source"
+  estimatedDelivery String?      // e.g. "3–5 days"
+  notes             String?      // internal research notes
+  terms             String?      // supplier terms (internal)
+  images            String       @default("[]") // JSON array of reference URLs
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  quotes            Quote[]
+
+  @@index([requestId])
+}
+
+// A concrete, priced offer presented to the customer ("customer quote").
+// Quotes carry the product, price plus fee breakdown, delivery estimate and
+// customer-facing terms — but never internal supplier notes/images. All money
+// is stored in minor units (kobo) as integers; the total is computed
+// server-side in kobo before serialization, never from client input.
+model Quote {
+  id                 String            @id @default(cuid())
+  requestId          String
+  request            Request           @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  optionId           String?
+  option             RequestOption?    @relation(fields: [optionId], references: [id], onDelete: SetNull)
+  productName        String
+  priceKobo          Int
+  serviceFeeKobo     Int               @default(0) // our service fee, in kobo
+  deliveryFeeKobo    Int               @default(0) // delivery fee, in kobo
+  information        String?           // what makes this option relevant / noteworthy
+  images             String            @default("[]") // JSON array of reference URLs
+  estimatedDelivery  String?
+  terms              String?
+  validUntil         DateTime?
+  status             String            @default("PENDING") // PENDING | ACCEPTED | DECLINED | EXPIRED
+  source             String            @default("MANUAL") // MANUAL (ops-crafted) | AUTO (automation-generated)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@index([requestId])
+  @@index([status])
+  @@index([source])
+}
+
+// A charge attempt against the payment provider for one approved request.
+// Only the payment webhook — never frontend input — can move a payment to PAID
+// (see lib/payments). Money is stored in minor units (kobo) as integers.
+model Payment {
+  id                String    @id @default(cuid())
+  requestId         String
+  request           Request   @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  customerId        String
+  customer          User      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  reference         String    @unique // platform-facing, e.g. PAY-8K3F2Q7MX1
+  provider          String    @default("sandbox") // which gateway handled this attempt
+  providerReference String    @unique // the gateway's external reference, e.g. SBOX-…
+  amountKobo        Int       // exact charged amount = approved quote total
+  currency          String    @default("NGN")
+  status            String    @default("PENDING") // PENDING | PAID | FAILED | REFUNDED | PARTIALLY_REFUNDED
+  providerStatus    String?   // last verified status from the gateway (sandbox authoritative state)
+  providerToken     String?   // one-time sandbox capability token used to charge
+  webhookSecret     String?   // HMAC secret used to sign this attempt's webhooks
+  paidAt            DateTime?
+  failedAt          DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  transactions      Transaction[]
+  refunds           Refund[]
+
+  @@index([requestId])
+  @@index([customerId])
+  @@index([status])
+}
+
+// Immutable ledger rows: every CHARGE/REFUND step a payment took.
+model Transaction {
+  id                String   @id @default(cuid())
+  paymentId         String
+  payment           Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  type              String   // CHARGE | REFUND
+  status            String   // SUCCEEDED | FAILED
+  amountKobo        Int
+  reference         String   @unique // e.g. TXN-…
+  providerReference String?
+  createdAt         DateTime @default(now())
+
+  @@index([paymentId])
+  @@index([type])
+}
+
+// Audit trail for issued refunds (created by an operations/admin user).
+model Refund {
+  id            String  @id @default(cuid())
+  paymentId     String
+  payment       Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  amountKobo    Int
+  reason        String?
+  createdById   String  // operator/ADMIN user id (kept without FK for audit permanence)
+  status        String  @default("PROCESSED")
+  reference     String  @unique // e.g. RFD-…
+  transactionId String? // the matching REFUND Transaction row id
+  createdAt     DateTime @default(now())
+
+  @@index([paymentId])
+}
+
+// An order's delivery through a logistics provider. Logistics stay abstracted
+// behind lib/delivery/providers — the sandbox provider computes fees/ETA from
+// deterministic rules today, and more providers can be registered without
+// touching routes or the UI. Money is stored in kobo; the fee is recomputed
+// server-side at assignment time and never trusted from a client.
+model Delivery {
+  id                String          @id @default(cuid())
+  requestId         String
+  request           Request         @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  reference         String          @unique // e.g. DLV-…
+  provider          String          @default("sandbox") // registry key in lib/delivery/providers
+  status            String          @default("ASSIGNED") // lib/delivery/status.ts
+  pickup            String?         // where the parcel is collected
+  dropLocation      String?         // where it must be delivered (defaults to request.location)
+  feeKobo           Int             @default(0) // recomputed server-side, never client input
+  feeBreakdown      String          @default("{}") // JSON detail of the server fee calculation
+  eta               DateTime?       // provider-derived estimated arrival
+  trackingUrl       String?         // where the customer can follow the parcel
+  trackingReference String?         // provider-side tracking id
+  proofType         String?         // e.g. photo | signature | confirmation_code
+  proofReference    String?         // e.g. photo URL, signature id or confirmation code
+  proofNote         String?         // human note captured at proof time
+  recipientName     String?
+  deliveredAt       DateTime?
+  notes             String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  events            DeliveryEvent[]
+
+  @@unique([requestId])
+  @@index([provider, status])
+}
+
+// Immutable timeline for a delivery: every status change and proof capture is
+// recorded so tracking always reflects an auditable history.
+model DeliveryEvent {
+  id         String    @id @default(cuid())
+  deliveryId String
+  delivery   Delivery  @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  fromStatus String? // null for the "created" event
+  toStatus   String
+  cause      String    @default("operator") // created | operator
+  actorId    String? // User.id of the actor, when a user performed the change
+  actorRole  String? // CUSTOMER | OPERATIONS | ADMIN | SUPPLIER, when a user performed the change
+  details    String? // e.g. proof summary
+  createdAt  DateTime  @default(now())
+
+  @@index([deliveryId, createdAt])
+}
+
+// Phase 11 — Ratings, Trust & Disputes.
+//
+// Trust is a core product feature: customers rate the suppliers who served
+// them, disputes and complaints drive resolution + refund workflows, and
+// deterministic fraud signals protect the marketplace. Rating runs live on a
+// 1–5 integer scale; all money continues to be handled by the payments layer.
+
+// A customer's rating of a supplier for a single request. Immutable outcome
+// but editable while it is the latest — an upsert keeps exactly one rating per
+// (request, supplier, customer) so no single customer can pad a supplier.
+model Rating {
+  id         String   @id @default(cuid())
+  requestId  String
+  request    Request  @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  customerId String
+  customer   User     @relation("CustomerRatings", fields: [customerId], references: [id], onDelete: Cascade)
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  score      Int // 1–5, validated by lib/trust/ratings.ts
+  comment    String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([requestId, supplierId, customerId])
+  @@index([supplierId])
+  @@index([customerId])
+}
+
+// A marketplace complaint raised about a supplier, customer, or a request.
+// Complaints are triaged by admins; repeated complaints against the same
+// subject also feed the deterministic fraud signals.
+model Complaint {
+  id           String   @id @default(cuid())
+  reference    String   @unique // human-friendly, e.g. CMP-…
+  subjectType  String // SUPPLIER | CUSTOMER | REQUEST (lib/trust/types.ts)
+  subjectId    String // supplier.id / user.id / request.id — kept FK-less for permanence
+  requestId    String? // optional request link for context
+  request      Request? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  raisedById   String // user id, FK-less for audit permanence (mirrors Refund.createdById)
+  category     String // e.g. LATE_DELIVERY | QUALITY | COMMUNICATION | BILLING | OTHER
+  description  String
+  status       String   @default("OPEN") // OPEN | IN_REVIEW | RESOLVED (lib/trust/types.ts)
+  resolution   String?
+  resolvedById String? // admin user id
+  resolvedAt   DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([status])
+  @@index([subjectType, subjectId])
+}
+
+// A formal customer/ops dispute against a request. Opening a dispute moves the
+// request to DISPUTED; an admin then resolves it with a full refund (which runs
+// through the existing refund workflow) or no refund (returning the request to
+// COMPLETED). At most one open dispute per request, enforced uniquely.
+model Dispute {
+  id                 String   @id @default(cuid())
+  reference          String   @unique // human-friendly, e.g. DSP-…
+  requestId          String
+  request            Request  @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  raisedById         String // user id (FK-less for audit permanence)
+  raisedByRole       String   @default("CUSTOMER") // CUSTOMER | OPERATIONS
+  reason             String // WHY_WRONG | NOT_RECEIVED | QUALITY | BILLING | OTHER (lib/trust/types.ts)
+  description        String
+  expectedResolution String? // customer intent: refund | replacement | other
+  status             String   @default("OPEN") // OPEN | IN_REVIEW | RESOLVED_REFUND | RESOLVED_NO_REFUND (lib/trust/types.ts)
+  resolutionNote     String?
+  refundReference    String? // linked Refund.reference when resolved with a refund
+  resolvedById       String? // admin user id
+  resolvedAt         DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([requestId])
+  @@index([status])
+}
+
+// A trust/safety flag. Auto-generated deterministically by lib/trust/fraud.ts
+// from stored data (never from client claims), or placed manually by an admin.
+model FraudFlag {
+  id            String    @id @default(cuid())
+  reference     String    @unique // human-friendly, e.g. FLG-…
+  subjectType   String // CUSTOMER | SUPPLIER | REQUEST
+  subjectId     String // user.id / supplier.id / request.id
+  requestId     String?
+  request       Request?  @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  signal        String // deterministic signal code (lib/trust/fraud.ts)
+  severity      String // HIGH | MEDIUM | LOW
+  detail        String // human-readable context
+  status        String    @default("FLAGGED") // FLAGGED | REVIEWED | CLEARED
+  reviewedById  String? // admin user id
+  note          String?
+  createdAt     DateTime  @default(now())
+  resolvedAt    DateTime?
+
+  @@unique([subjectType, subjectId, signal])
+  @@index([status])
+}
+
+// Phase 13 — Scale & Automation. Notification delivery, an automation ledger,
+// and inventory synchronisation. All providers are deterministic sandboxes:
+// nothing leaves the server, and automation recommendations never move money
+// without an operator (see lib/suppliers/matching.ts and lib/operations).
+
+// A notification a user receives across channels. One row per event (this is
+// what the bell shows); the `channels` field records which of the sandbox
+// channels (email | sms | push | whatsapp) were attempted, filtered by the
+// user's NotificationPreference rows.
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String // e.g. REQUEST_CREATED | SUPPLIER_LEAD | QUOTE_READY | PAYMENT_PAID | DELIVERED | LOW_STOCK
+  reference String? // related business reference (REQ-…, QUO-…, DLV-…, SYN-…)
+  title     String
+  body      String
+  channels  String    @default("[]") // JSON array of channel keys delivered to, in order
+  status    String    @default("SENT") // SENT | FAILED
+  error     String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, readAt])
+}
+
+// Per-user channel opt-in/out. A missing row means "enabled" (the default),
+// matching the pattern of sensible-defaults used elsewhere in the app.
+model NotificationPreference {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel   String // email | sms | push | whatsapp
+  enabled   Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, channel])
+}
+
+// Immutable audit ledger of every automation run, so "what did the system do
+// and why" is always visible to operations. Runs never move money on their
+// own: they recommend, generate PENDING quotes and deliver notifications.
+model AutomationRun {
+  id        String    @id @default(cuid())
+  reference String    @unique // human-friendly, e.g. AUTO-…
+  trigger   String // REQUEST_CREATED | PAYMENT_PAID | DELIVERED | LOW_STOCK
+  requestId String?
+  request   Request?  @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  status    String    @default("COMPLETED") // COMPLETED | SKIPPED | FAILED
+  summary   String? // human summary of what the run did
+  results   String    @default("[]") // JSON array of { action, detail, reference? } entries
+  error     String?
+  createdAt DateTime  @default(now())
+
+  @@index([requestId])
+  @@index([trigger, createdAt(sort: Desc)])
+}
+
+// Immutable audit row for one inventory synchronisation. `entries` carries the
+// per-offering outcome so supplier ERP pushes are fully traceable.
+model CatalogSync {
+  id         String    @id @default(cuid())
+  reference  String    @unique // human-friendly, e.g. SYN-…
+  supplierId String
+  supplier   Supplier  @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  provider   String    @default("api") // api | web
+  status     String    @default("COMPLETED") // COMPLETED | PARTIAL | FAILED
+  summary    String? // e.g. "3 updated, 1 deactivated, 1 low-stock alert"
+  entries    String    @default("[]") // JSON array of per-entry results
+  error      String?
+  createdAt  DateTime  @default(now())
+
+  @@index([supplierId, createdAt(sort: Desc)])
+}
