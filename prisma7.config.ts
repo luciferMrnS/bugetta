@@ -3,10 +3,21 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
+// DATABASE_PROVIDER chooses which datasource (and therefore which migration
+// set) Prisma operates on:
+//   - sqlite      -> prisma/schema.prisma + prisma/migrations      (local dev/tests)
+//   - postgresql  -> prisma/schema.postgres.prisma + prisma/postgres-migrations
+//                    (Supabase / production)
 export default defineConfig({
-  schema: "prisma/schema.prisma",
+  schema:
+    process.env["DATABASE_PROVIDER"] === "postgresql"
+      ? "prisma/schema.postgres.prisma"
+      : "prisma/schema.prisma",
   migrations: {
-    path: "prisma/migrations",
+    path:
+      process.env["DATABASE_PROVIDER"] === "postgresql"
+        ? "prisma/postgres-migrations"
+        : "prisma/migrations",
   },
   datasource: {
     // Falls back to the local SQLite dev database so `prisma generate` works

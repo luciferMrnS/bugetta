@@ -32,8 +32,8 @@ npm run dev            # http://localhost:3000
 
 | Variable | Local value | Production |
 | --- | --- | --- |
-| `DATABASE_PROVIDER` | `sqlite` | `postgresql` (planned) |
-| `DATABASE_URL` | `file:./prisma/dev.db` | `postgresql://…` (planned) |
+| `DATABASE_PROVIDER` | `sqlite` | `postgresql` (Supabase) |
+| `DATABASE_URL` | `file:./prisma/dev.db` | `postgresql://…` (Supabase pooled URL) |
 
 Secrets (payment keys, production credentials) are loaded exclusively from
 environment variables and are never committed. `.env` is gitignored;

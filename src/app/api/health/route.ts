@@ -1,4 +1,4 @@
-import { prisma, getDatabasePath } from "@/lib/prisma";
+import { prisma, getDatabaseDescriptor } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
@@ -20,11 +20,14 @@ export async function GET() {
     );
   }
 
+  const db = getDatabaseDescriptor();
+
   return Response.json({
     status: "ok",
     service: "bugetta-api",
     db: "connected",
-    dbPath: getDatabasePath(),
+    dbProvider: db.provider,
+    dbLocation: db.location,
     latencyMs: Math.round(performance.now() - startedAt),
     timestamp: new Date().toISOString(),
   });
