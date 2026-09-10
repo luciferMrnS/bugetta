@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: bugetta
+    runtime: node
+    buildCommand: npm install && npx prisma generate && npm run build
+    startCommand: npx prisma migrate deploy && npm start
+    envVars:
+      - key: DATABASE_URL
+        value: file:/var/data/bugetta.db
+    disks:
+      - name: data
+        mountPath: /var/data
+        sizeGB: 1
